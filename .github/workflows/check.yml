@@ -1,0 +1,35 @@
+name: check
+on:
+  push:
+    branches: ['job/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax and json
+        run: |
+          fail=0; n=0
+          chk() { # kind cmd file
+            if "${@:2}" >/dev/null 2>&1; then echo "PASS $1 $3"; else echo "FAIL $1 $3"; fail=1; fi
+          }
+          while IFS= read -r f; do
+            n=$((n+1))
+            case "$f" in
+              *.json) chk json jq empty "$f"; continue ;;
+              *.py)   chk py python3 -m py_compile "$f"; continue ;;
+              *.sh)   chk bash bash -n "$f"; continue ;;
+            esac
+            first=$(head -n1 "$f" | head -c 80)
+            case "$first" in
+              '#!'*bash*|'#!'*/sh*) chk bash bash -n "$f" ;;
+              '#!'*zsh*) if command -v zsh >/dev/null; then chk zsh zsh -n "$f"; else echo "SKIP zsh $f"; fi ;;
+              '#!'*python*) chk py python3 -m py_compile "$f" ;;
+            esac
+          done < <(git ls-files | grep -v '^\.github/')
+          echo "checked $n files"
+          exit $fail
