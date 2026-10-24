@@ -1,0 +1,118 @@
+name: env-diag
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-slim, windows-2025, windows-11-arm, macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p out
+          {
+          echo "## os"; uname -a; cat /etc/os-release | head -4
+          echo "## virt"; systemd-detect-virt 2>&1; grep -o -m1 -E 'vmx|svm|hypervisor' /proc/cpuinfo | sort -u
+          echo "## cpu"; lscpu | head -25
+          echo "## mem"; free -h
+          echo "## disk"; df -h / /tmp 2>&1; lsblk 2>&1 | head -20
+          echo "## dev nodes"; ls /dev | tr '\n' ' '; echo
+          echo "## kvm"; ls -l /dev/kvm 2>&1
+          echo "## dri/gpu"; ls -l /dev/dri 2>&1; (lspci 2>&1 || true) | head -20
+          echo "## sound"; ls /proc/asound 2>&1; cat /proc/asound/cards 2>&1; ls /dev/snd 2>&1
+          echo "## usb/bt/input"; (lsusb 2>&1 || true) | head; ls /sys/class/bluetooth 2>&1; ls /dev/input 2>&1; ls /dev/video* 2>&1
+          echo "## power/thermal"; ls /sys/class/power_supply 2>&1; ls /sys/class/thermal 2>&1 | head -3
+          echo "## kernel modules sample"; lsmod | head -30
+          echo "## try snd-aloop"; sudo modprobe snd-aloop 2>&1; echo "rc=$?"
+          echo "## net"; ip -br addr 2>&1; cat /etc/resolv.conf | head -5
+          echo "## outbound"; curl -sS -m 10 -o /dev/null -w "https example.com: %{http_code}\n" https://example.com 2>&1
+          echo "## inbound listen ports"; (ss -ltn 2>&1 || true) | head
+          echo "## user"; id; sudo -n true && echo "sudo ok"
+          echo "## locale/time"; locale 2>&1 | head -3; date; cat /etc/timezone 2>&1
+          echo "## display env"; echo "DISPLAY=${DISPLAY:-unset} WAYLAND=${WAYLAND_DISPLAY:-unset}"; which xvfb-run Xvfb xdotool xrandr scrot import pulseaudio pipewire 2>&1
+          echo "## docker"; docker info 2>&1 | head -12
+          echo "## limits"; ulimit -a | head -20; nproc
+          echo "## tpm/secureboot"; ls /dev/tpm* 2>&1; ls /sys/firmware/efi 2>&1 | head -3
+          } > out/report.txt 2>&1 || true
+          if command -v Xvfb >/dev/null; then
+            xvfb-run -s "-screen 0 1280x1024x24" bash -c 'xdpyinfo | grep -E "dimensions|depth of root"; import -window root out/screen.png 2>&1 || true' >> out/report.txt 2>&1 || true
+          fi
+          cat out/report.txt
+      - name: windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $r = 'out/report.txt'
+          function Sec($t, [scriptblock]$b) { "## $t" | Out-File $r -Append; try { & $b 2>&1 | Out-String -Width 220 | Out-File $r -Append } catch { "ERR: $_" | Out-File $r -Append } }
+          Sec 'os' { Get-CimInstance Win32_OperatingSystem | Select Caption, Version, BuildNumber, OSArchitecture, MUILanguages | fl }
+          Sec 'computer' { Get-CimInstance Win32_ComputerSystem | Select Manufacturer, Model, HypervisorPresent, NumberOfProcessors, NumberOfLogicalProcessors, TotalPhysicalMemory | fl; Get-CimInstance Win32_BIOS | Select Manufacturer, SMBIOSBIOSVersion | fl }
+          Sec 'cpu' { Get-CimInstance Win32_Processor | Select Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | fl }
+          Sec 'disk' { Get-PSDrive -PSProvider FileSystem | Select Name, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}} | ft }
+          Sec 'video' { Get-CimInstance Win32_VideoController | Select Name, AdapterRAM, CurrentHorizontalResolution, CurrentVerticalResolution, DriverVersion | fl }
+          Sec 'monitor' { Get-CimInstance Win32_DesktopMonitor | Select Name, ScreenWidth, ScreenHeight | fl }
+          Sec 'sound devices' { Get-CimInstance Win32_SoundDevice | Select Name, Status | fl; Get-Service Audiosrv, AudioEndpointBuilder | Select Name, Status | ft }
+          Sec 'keyboard/mouse' { Get-CimInstance Win32_Keyboard | Select Name | fl; Get-CimInstance Win32_PointingDevice | Select Name | fl }
+          Sec 'usb/bluetooth/camera/battery' { Get-CimInstance Win32_USBController | Select Name | fl; Get-PnpDevice -Class Bluetooth, Camera, Image, Printer -ErrorAction SilentlyContinue | Select Class, FriendlyName, Status | ft; Get-CimInstance Win32_Battery | Select Name | fl }
+          Sec 'pnp classes' { Get-PnpDevice -PresentOnly | Group-Object Class | Sort-Object Count -Descending | Select Count, Name | ft }
+          Sec 'tpm/secureboot' { Get-Tpm; Confirm-SecureBootUEFI }
+          Sec 'session' { whoami; whoami /groups | Select-String 'Mandatory|Administrators'; "SessionId=" + [System.Diagnostics.Process]::GetCurrentProcess().SessionId; "UserInteractive=" + [Environment]::UserInteractive; query session; Get-Process explorer, dwm, winlogon -ErrorAction SilentlyContinue | Select Name, SessionId | ft }
+          Sec 'screens' { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | Select DeviceName, Bounds, Primary | fl }
+          Sec 'uac' { (Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).EnableLUA }
+          Sec 'locale/time' { Get-Culture | Select Name, DisplayName | fl; Get-TimeZone | Select Id | fl; Get-Date }
+          Sec 'net' { Get-NetAdapter | Select Name, InterfaceDescription, Status | ft; Get-NetIPAddress -AddressFamily IPv4 | Select InterfaceAlias, IPAddress | ft }
+          Sec 'outbound' { (Invoke-WebRequest https://example.com -UseBasicParsing -TimeoutSec 10).StatusCode }
+          Sec 'features' { Get-WindowsOptionalFeature -Online | Where-Object State -eq Enabled | Select -First 40 FeatureName | ft; wsl --status }
+          Sec 'docker' { docker info 2>&1 | Select -First 8 }
+          Sec 'bitlocker' { Get-BitLockerVolume -ErrorAction SilentlyContinue | Select MountPoint, ProtectionStatus | ft }
+          try {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save('out/screen.png')
+            "screenshot ok $($b.Width)x$($b.Height)" | Out-File $r -Append
+          } catch { "screenshot failed: $_" | Out-File $r -Append }
+          Get-Content $r
+      - name: macos
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p out
+          {
+          echo "## os"; sw_vers; uname -a
+          echo "## hw"; sysctl hw.model hw.ncpu hw.memsize machdep.cpu.brand_string kern.hv_vmm_present 2>&1
+          echo "## disk"; df -h / 2>&1
+          echo "## displays"; system_profiler SPDisplaysDataType -timeout 30 2>&1 | head -40
+          echo "## audio"; system_profiler SPAudioDataType -timeout 30 2>&1 | head -30
+          echo "## bluetooth"; system_profiler SPBluetoothDataType -timeout 30 2>&1 | head -15
+          echo "## usb"; system_profiler SPUSBDataType -timeout 30 2>&1 | head -15
+          echo "## camera"; system_profiler SPCameraDataType -timeout 30 2>&1 | head -10
+          echo "## power"; pmset -g batt 2>&1; system_profiler SPPowerDataType -timeout 30 2>&1 | head -8
+          echo "## security"; csrutil status 2>&1; spctl --status 2>&1; fdesetup status 2>&1
+          echo "## user"; id; stat -f '%Su console owner' /dev/console; sudo -n true && echo "sudo ok"
+          echo "## gui processes"; ps -axo user,comm | grep -E 'WindowServer|Dock|Finder|loginwindow|SystemUIServer|coreaudiod' | grep -v grep
+          echo "## tcc (user)"; sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "select service,client,auth_value from access" 2>&1 | head -40
+          echo "## tcc (system)"; sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "select service,client,auth_value from access" 2>&1 | head -40
+          echo "## locale/time"; locale | head -2; date; systemsetup -gettimezone 2>&1
+          echo "## net"; networksetup -listallhardwareports 2>&1 | head -20; curl -sS -m 10 -o /dev/null -w "https example.com: %{http_code}\n" https://example.com 2>&1
+          echo "## docker/virt"; which docker docker-machine colima 2>&1
+          echo "## simulators"; xcrun simctl list runtimes 2>&1 | head -10
+          echo "## screenshot"; screencapture -x out/screen.png 2>&1; ls -la out/screen.png 2>&1
+          } > out/report.txt 2>&1 || true
+          cat out/report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-${{ matrix.os }}
+          path: out
+          retention-days: 3
+          if-no-files-found: ignore
