@@ -1,0 +1,36 @@
+name: fetch
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: ids
+        required: true
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: fetch
+        env:
+          IDS: ${{ inputs.ids }}
+        run: |
+          python3 -m pip install -q yt-dlp >/dev/null 2>&1
+          mkdir -p out; ok=0; bad=0
+          for id in $IDS; do
+            mkdir -p "out/$id"
+            if (cd "out/$id" && yt-dlp --skip-download --write-info-json --write-description --write-subs --write-auto-subs --sub-langs ru --sub-format "vtt/best" --write-thumbnail -o "%(id)s" "https://www.youtube.com/watch?v=$id" >yt.log 2>&1 && ls ./*.info.json >/dev/null 2>&1); then
+              ok=$((ok+1)); echo "OK $id"
+            else
+              bad=$((bad+1)); echo "FAIL $id $(grep -ioE 'sign in to confirm|not a bot|http error [0-9]+|private video|unavailable' "out/$id/yt.log" | head -1)"
+            fi
+            rm -f "out/$id/yt.log"; sleep 3
+          done
+          echo "ok=$ok fail=$bad"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out
+          path: out
+          retention-days: 1
+          if-no-files-found: ignore
