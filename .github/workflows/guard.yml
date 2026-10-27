@@ -7,15 +7,19 @@ permissions:
   contents: read
 jobs:
   guard:
+    # skip the job/* branch-creation push: it only re-points main's already-guarded commit
+    if: ${{ !(github.event_name == 'push' && github.event.created && startsWith(github.ref, 'refs/heads/job/')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: reject obvious secrets and personal paths
         run: |
           set -u
           pat='(gh[pousr]_[A-Za-z0-9]{30,})|([0-9]{8,10}:[A-Za-z0-9_-]{35})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(AKIA[0-9A-Z]{16})|(sk-ant-[A-Za-z0-9_-]{10,})|(/Users/[a-z][a-z0-9_]+/)'
-          if grep -rEnI --exclude-dir=.git --exclude=guard.yml "$pat" .; then
+          if grep -rEn --exclude-dir=.git --exclude=guard.yml "$pat" .; then
             echo "guard: forbidden pattern found"; exit 1
           fi
           echo "guard: clean"

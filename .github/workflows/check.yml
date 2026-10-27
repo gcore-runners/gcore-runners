@@ -7,11 +7,14 @@ permissions:
   contents: read
 jobs:
   check:
-    if: contains(github.event.head_commit.message, 'job ') || github.event_name == 'workflow_dispatch'
+    # only the final runner-run commit; not the branch-creation push (its head_commit is main's)
+    if: ${{ (github.event_name == 'push' && !github.event.created && startsWith(github.event.head_commit.message, 'job ')) || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: syntax and json
         run: |
           fail=0; n=0
@@ -27,8 +30,8 @@ jobs:
             esac
             first=$(head -n1 "$f" | head -c 80)
             case "$first" in
-              '#!'*bash*|'#!'*/sh*) chk bash bash -n "$f" ;;
               '#!'*zsh*) if command -v zsh >/dev/null; then chk zsh zsh -n "$f"; else echo "SKIP zsh $f"; fi ;;
+              '#!'*bash*|'#!'*[/\ ]sh|'#!'*[/\ ]sh\ *) chk bash bash -n "$f" ;;
               '#!'*python*) chk py python3 -m py_compile "$f" ;;
             esac
           done < <(git ls-files | grep -v '^\.github/')
