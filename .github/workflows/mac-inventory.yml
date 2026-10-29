@@ -1,0 +1,29 @@
+name: mac-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      labels:
+        description: 'JSON-список меток runs-on'
+        default: '["macos-14","macos-15","macos-26","macos-latest","macos-15-intel","macos-26-intel"]'
+permissions:
+  contents: read
+jobs:
+  inv:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.labels) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: inventory
+        env:
+          INV_LABEL: ${{ matrix.os }}
+        run: python3 scripts/mac-inventory.py > inv.json && cat inv.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inv-${{ matrix.os }}
+          path: inv.json
