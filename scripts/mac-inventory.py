@@ -38,11 +38,26 @@ def clean(v):
         return ""
     return v
 
+def ver_line(out):
+    """Строка с версией: пропускаем заголовки вида '... at path:' и пути."""
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.endswith(":") or line.startswith(("/", "-")):
+            continue
+        if any(ch.isdigit() for ch in line):
+            return clean(line)
+    return ""
+
 def tool(name, cmd=None, check=None):
-    """Версия инструмента, если он есть в PATH (иначе пусто)."""
-    if not first("command -v %s" % shlex.quote(check or name), timeout=10):
-        return ""
-    return clean(first(cmd or "%s --version" % name, timeout=30))
+    """Версия инструмента; если его нет в PATH, пробуем типовые каталоги (go лежит в /usr/local/go/bin)."""
+    cmd = cmd or "%s --version" % name
+    binname = check or name
+    if first("command -v %s" % shlex.quote(binname), timeout=10):
+        return ver_line(sh(cmd, timeout=30))
+    for d in ("/usr/local/go/bin", "/opt/homebrew/bin", "/usr/local/bin"):
+        if os.path.exists(os.path.join(d, binname)):
+            return ver_line(sh(cmd, env={"PATH": d + ":" + os.environ.get("PATH", "")}, timeout=30))
+    return ""
 
 def num(cmd, cast=int, default=0):
     """Число из команды; мусор и сбой — default (скрипт не должен падать из-за описи)."""

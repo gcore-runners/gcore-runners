@@ -4,7 +4,8 @@ on:
     inputs:
       labels:
         description: 'JSON-список меток runs-on'
-        default: '["macos-14","macos-15","macos-26","macos-latest","macos-15-intel","macos-26-intel"]'
+        # macos-14 снят: GitHub отвечает «configuration macos-14-arm64-us-default is not supported»
+        default: '["macos-15","macos-26","macos-latest","macos-15-intel","macos-26-intel"]'
 permissions:
   contents: read
 concurrency:
