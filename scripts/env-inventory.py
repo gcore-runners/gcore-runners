@@ -3,7 +3,7 @@
 
 Печатает JSON в stdout. Всё, что не удалось узнать, — пустая строка: опись остаётся валидной и сравнимой.
 """
-import json, os, platform, shutil, subprocess, sys, time
+import json, os, platform, re, shutil, subprocess, sys, time
 
 started = time.time()
 
@@ -17,13 +17,18 @@ def run(argv, timeout=60):
 # Ответы-заглушки версией не считаем
 BAD = ("error", "unable", "not found", "no such file", "cannot find", "couldn\u2019t", "couldn't")
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
 def clean(v):
-    return "" if not v or any(b in v.lower() for b in BAD) else v
+    if not v:
+        return ""
+    v = " ".join(ANSI.sub("", v).split())
+    return "" if any(b in v.lower() for b in BAD) else v
 
 def ver_line(out):
     for line in out.splitlines():
         line = line.strip()
-        if not line or line.endswith(":") or line.startswith(("/", "-")):
+        if not line or line.endswith(":") or line.startswith(("/", "-", "[")):
             continue
         if any(ch.isdigit() for ch in line):
             return clean(line)
@@ -85,7 +90,8 @@ def os_info():
         return name or platform.platform(), ver, platform.release()
     if sys.platform == "win32":
         rel, ver, csd, _ = platform.win32_ver()
-        return "Windows " + rel, ver, csd
+        name = ("Windows Server " + rel[:-6]) if rel.endswith("Server") else ("Windows " + rel)
+        return name, ver, (ver + (" " + csd if csd and csd != "SP0" else ""))
     if sys.platform == "darwin":
         return ("macOS " + run(["sw_vers", "-productVersion"], 10).strip(),
                 run(["sw_vers", "-buildVersion"], 10).strip(), platform.release())
