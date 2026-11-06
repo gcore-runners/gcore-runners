@@ -1,0 +1,45 @@
+name: env-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      labels:
+        description: 'JSON-список меток runs-on'
+        default: '["ubuntu-latest","ubuntu-24.04-arm","windows-latest"]'
+permissions:
+  contents: read
+concurrency:
+  group: env-inventory
+  cancel-in-progress: false
+jobs:
+  inv:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.labels) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: inventory
+        shell: bash
+        env:
+          INV_LABEL: ${{ matrix.os }}
+        run: |
+          case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) PY=python ;; *) PY=python3 ;; esac
+          command -v "$PY" >/dev/null 2>&1 || PY=python3
+          "$PY" scripts/env-inventory.py > inv.json
+          "$PY" - <<'PY'
+          import json
+          x = json.load(open("inv.json"))
+          print("label:", x["label"], "image:", x["image_os"], x["image_version"])
+          print("os:", x["os_name"], x["os_version"], x["arch"], "cpu:", x["ncpu"], "ram:", x["ram_gb"])
+          print("tools:", sum(1 for v in x["tools"].values() if v), "of", len(x["tools"]), "seconds:", x["collect_seconds"])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inv-${{ matrix.os }}
+          path: inv.json
+          if-no-files-found: error
+          retention-days: 14
