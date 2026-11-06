@@ -1,0 +1,35 @@
+name: task
+# Выполнение произвольного run.sh на публичном раннере. Запускается командой runner-task:
+# ветка task/* содержит только данные (run.sh и файлы), workflow всегда берётся из main.
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'runs-on (ubuntu-latest | windows-latest | macos-15 | ...)'
+        default: 'ubuntu-latest'
+      timeout:
+        description: 'лимит минут (1..360)'
+        default: '30'
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ${{ inputs.label }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: run
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p out
+          bash run.sh 2>&1 | tee out/log.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: task-out
+          path: out
+          if-no-files-found: ignore
+          retention-days: 14
