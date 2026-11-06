@@ -7,6 +7,9 @@ on:
         default: '["macos-14","macos-15","macos-26","macos-latest","macos-15-intel","macos-26-intel"]'
 permissions:
   contents: read
+concurrency:
+  group: mac-inventory
+  cancel-in-progress: false
 jobs:
   inv:
     strategy:
@@ -22,8 +25,22 @@ jobs:
       - name: inventory
         env:
           INV_LABEL: ${{ matrix.os }}
-        run: python3 scripts/mac-inventory.py > inv.json && cat inv.json
+        run: |
+          python3 scripts/mac-inventory.py > inv.json
+          python3 - <<'PY'
+          import json
+          x = json.load(open("inv.json"))
+          print("label:", x["label"], "image:", x["image_os"], x["image_version"])
+          print("macOS:", x["macos"], x["macos_build"], x["arch"],
+                "cpu:", x["ncpu"], "ram:", x["ram_gb"], "disk:", x["disk_total_gb"], "free:", x["disk_free_gb"])
+          print("xcode default:", x["xcode_default_version"],
+                [c["version"].replace("Xcode ", "") for c in x["xcodes"]])
+          print("tools:", sum(1 for v in x["tools"].values() if v), "of", len(x["tools"]),
+                "simulators:", len(x["simulators"]), "seconds:", x["collect_seconds"])
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: inv-${{ matrix.os }}
           path: inv.json
+          if-no-files-found: error
+          retention-days: 14
