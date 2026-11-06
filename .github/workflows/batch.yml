@@ -1,0 +1,44 @@
+name: batch
+# Пакетная работа: один и тот же run.sh на N кусках (matrix). Запускается runner-task с числом кусков > 1.
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'runs-on (ubuntu-latest | windows-latest | macos-15 | ...)'
+        default: 'ubuntu-latest'
+      shards:
+        description: 'JSON-список номеров кусков, например [0,1,2]'
+        default: '[0,1,2]'
+      timeout:
+        description: 'лимит минут на кусок (1..360)'
+        default: '30'
+permissions:
+  contents: read
+jobs:
+  shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    runs-on: ${{ inputs.label }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: run
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          bash run.sh 2>&1 | tee "out/log-${SHARD}.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.shard }}
+          path: out
+          if-no-files-found: ignore
+          retention-days: 14
