@@ -40,6 +40,15 @@ jobs:
           Add-LocalGroupMember -Group 'Administrators' -Member rdp -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member rdp -ErrorAction SilentlyContinue
           Write-Host 'RDP включён, пользователь rdp'
+      - name: SSH-сервер
+        shell: pwsh
+        run: |
+          # ssh по тому же адресу tailnet, что и mstsc; вход пользователем rdp с тем же паролем
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+          Set-Service sshd -StartupType Automatic
+          Start-Service sshd
+          New-NetFirewallRule -Name sshd-in -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue | Out-Null
+          Write-Host 'SSH включён (порт 22 в tailnet)'
       - name: Tailscale
         if: inputs.tunnel == 'tailscale'
         shell: pwsh
