@@ -14,6 +14,9 @@ on:
       tunnel:
         description: 'tailscale (нужен TS_AUTHKEY) или serveo (без настроек)'
         default: 'serveo'
+      os:
+        description: 'Метка раннера: windows-2022 | windows-2025 | windows-11-arm'
+        default: 'windows-2022'
 permissions:
   contents: read
 concurrency:
@@ -21,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   rdp:
-    runs-on: windows-latest
+    runs-on: ${{ inputs.os }}
     timeout-minutes: 350
     steps:
       - name: Включить RDP и отдельного пользователя
