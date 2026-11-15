@@ -34,6 +34,9 @@ jobs:
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+          # у интерфейса Tailscale профиль может быть «Public», и правило Remote Desktop тогда не действует:
+          # открываем порт явно и только для адресов tailnet (100.64.0.0/10)
+          New-NetFirewallRule -Name rdp-ts -DisplayName 'RDP tailnet' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -RemoteAddress 100.64.0.0/10 -ErrorAction SilentlyContinue | Out-Null
           $sec = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           if (Get-LocalUser -Name rdp -ErrorAction SilentlyContinue) { Set-LocalUser -Name rdp -Password $sec }
           else { New-LocalUser -Name rdp -Password $sec -PasswordNeverExpires | Out-Null }
@@ -47,7 +50,7 @@ jobs:
           Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
           Set-Service sshd -StartupType Automatic
           Start-Service sshd
-          New-NetFirewallRule -Name sshd-in -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue | Out-Null
+          New-NetFirewallRule -Name sshd-in -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any -RemoteAddress 100.64.0.0/10 -ErrorAction SilentlyContinue | Out-Null
           Write-Host 'SSH включён (порт 22 в tailnet)'
       - name: Tailscale
         if: inputs.tunnel == 'tailscale'
@@ -81,6 +84,9 @@ jobs:
         env:
           MINUTES: ${{ inputs.minutes }}
         run: |
-          $until = (Get-Date).AddMinutes([int]$MINUTES)
+          $m = 0
+          [int]::TryParse($env:MINUTES, [ref]$m) | Out-Null
+          if ($m -le 0) { $m = 90 }
+          $until = (Get-Date).AddMinutes($m)
           Write-Host "Машина работает до $($until.ToString('HH:mm')) UTC; вход: rdp / секрет RDP_PASSWORD"
           while ((Get-Date) -lt $until) { Start-Sleep -Seconds 60 }
