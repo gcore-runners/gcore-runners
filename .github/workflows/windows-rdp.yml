@@ -1,0 +1,77 @@
+name: windows-rdp
+# Временная Windows-машина с RDP: замерить задержку «как у настоящего ПК».
+# Запуск (вручную, по слову владельца):
+#   gh workflow run windows-rdp.yml -R gcore-runners/gcore-runners -f minutes=60 -f tunnel=serveo
+# Вход: mstsc → адрес и порт из шага «Адрес», пользователь rdp, пароль — секрет RDP_PASSWORD.
+# tunnel=tailscale требует секрет TS_AUTHKEY (ключ tailnet, reusable, ephemeral); serveo — без настроек,
+# но трафик идёт через чужой релей, задержка выше и адрес живёт только пока держим машину.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Сколько держать машину, минут'
+        default: '60'
+      tunnel:
+        description: 'tailscale (нужен TS_AUTHKEY) или serveo (без настроек)'
+        default: 'serveo'
+permissions:
+  contents: read
+concurrency:
+  group: windows-rdp
+  cancel-in-progress: false
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Включить RDP и отдельного пользователя
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if (-not $env:RDP_PASSWORD) { throw 'секрет RDP_PASSWORD не задан' }
+          # отдельный пользователь: вход под runneradmin выбил бы сессию, в которой идёт сам прогон
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+          $sec = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          if (Get-LocalUser -Name rdp -ErrorAction SilentlyContinue) { Set-LocalUser -Name rdp -Password $sec }
+          else { New-LocalUser -Name rdp -Password $sec -PasswordNeverExpires | Out-Null }
+          Add-LocalGroupMember -Group 'Administrators' -Member rdp -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member rdp -ErrorAction SilentlyContinue
+          Write-Host 'RDP включён, пользователь rdp'
+      - name: Tailscale
+        if: inputs.tunnel == 'tailscale'
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if (-not $env:TS_AUTHKEY) { throw 'секрет TS_AUTHKEY не задан' }
+          $exe = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $exe)) {
+            Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe' -OutFile "$env:RUNNER_TEMP\ts.exe"
+            Start-Process "$env:RUNNER_TEMP\ts.exe" '/quiet' -Wait
+          }
+          & $exe up --authkey "$env:TS_AUTHKEY" --hostname gh-windows-rdp --accept-routes
+          Write-Host "Адрес: $(& $exe ip -4)  (mstsc → этот IPv4)"
+      - name: Serveo-туннель
+        if: inputs.tunnel == 'serveo'
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\serveo.log"
+          Start-Process ssh -ArgumentList '-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','ServerAliveInterval=30','-N','-R','0:localhost:3389','serveo.net' -RedirectStandardError $log -WindowStyle Hidden | Out-Null
+          $addr = $null
+          for ($i = 0; $i -lt 40 -and -not $addr; $i++) {
+            Start-Sleep -Seconds 3
+            if (Test-Path $log) { $m = Select-String -Path $log -Pattern 'serveo\.net:\d+' | Select-Object -First 1; if ($m) { $addr = $m.Matches[0].Value } }
+          }
+          if ($addr) { Write-Host "Адрес: $addr  (mstsc → этот адрес и порт)" }
+          else { Write-Host 'serveo не ответил:'; Get-Content $log -ErrorAction SilentlyContinue }
+      - name: Держать машину
+        shell: pwsh
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          $until = (Get-Date).AddMinutes([int]$MINUTES)
+          Write-Host "Машина работает до $($until.ToString('HH:mm')) UTC; вход: rdp / секрет RDP_PASSWORD"
+          while ((Get-Date) -lt $until) { Start-Sleep -Seconds 60 }
