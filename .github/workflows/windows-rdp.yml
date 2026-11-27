@@ -27,6 +27,9 @@ jobs:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 350
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Включить RDP и отдельного пользователя
         shell: pwsh
         env:
