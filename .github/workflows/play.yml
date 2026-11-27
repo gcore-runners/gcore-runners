@@ -1,0 +1,176 @@
+name: play
+# Машина «по кнопке»: Linux/macOS с VNC/noVNC или SSH, адрес — артефактом play-connect.
+# Windows сюда не входит: для них windows-rdp.yml (RDP). Туннель — bore.pub.
+# Запуск:
+#   gh workflow run play.yml -R gcore-runners/gcore-runners -f label=ubuntu-24.04
+# Секрет: RDP_PASSWORD — единый пароль для VNC и SSH.
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Linux/macOS метка (Windows — через windows-rdp.yml)'
+        default: 'ubuntu-24.04'
+      method:
+        description: 'auto | vnc | ssh'
+        default: 'auto'
+      minutes:
+        description: 'Сколько держать машину, минут (slim ≤ 8)'
+        default: '60'
+      desktop:
+        description: 'Поставить xfce4 на Linux (true/false)'
+        default: 'true'
+permissions:
+  contents: read
+concurrency:
+  group: play-${{ inputs.label }}
+  cancel-in-progress: false
+jobs:
+  play:
+    runs-on: ${{ inputs.label }}
+    timeout-minutes: 380
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: validate
+        id: v
+        shell: bash
+        env:
+          LABEL: ${{ inputs.label }}
+          METHOD: ${{ inputs.method }}
+          MINUTES: ${{ inputs.minutes }}
+          DESKTOP: ${{ inputs.desktop }}
+        run: |
+          set -euo pipefail
+          python3 scripts/play_connect.py validate \
+            --label "$LABEL" --method "$METHOD" --minutes "$MINUTES" --desktop "$DESKTOP" \
+            >> "$GITHUB_OUTPUT"
+      - name: 'Linux: Xvfb + VNC/noVNC'
+        if: runner.os == 'Linux' && steps.v.outputs.method == 'vnc'
+        shell: bash
+        env:
+          PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          DESKTOP: ${{ steps.v.outputs.desktop }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PASSWORD:-}" ]; then echo "секрет RDP_PASSWORD не задан" >&2; exit 1; fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq x11vnc xvfb novnc websockify
+          if [ "$DESKTOP" = "true" ]; then
+            sudo apt-get install -y -qq xfce4 xfce4-terminal
+          fi
+          Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+          sleep 2
+          if [ "$DESKTOP" = "true" ]; then
+            if command -v dbus-run-session >/dev/null 2>&1; then
+              DISPLAY=:99 dbus-run-session -- startxfce4 >/tmp/xfce.log 2>&1 &
+            else
+              DISPLAY=:99 startxfce4 >/tmp/xfce.log 2>&1 &
+            fi
+            sleep 3
+          fi
+          x11vnc -storepasswd "$PASSWORD" /tmp/vncpass >/dev/null 2>&1
+          x11vnc -display :99 -rfbauth /tmp/vncpass -forever -shared -rfbport 5900 \
+            -bg -o /tmp/x11vnc.log
+          websockify --web=/usr/share/novnc 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+          for i in $(seq 1 20); do
+            ss -ltn | grep -q ':5900' && ss -ltn | grep -q ':6080' && break
+            sleep 1
+          done
+          ss -ltn | grep -E ':(5900|6080)\b' || {
+            echo "VNC/noVNC не слушают" >&2; tail -30 /tmp/x11vnc.log >&2; exit 1; }
+      - name: 'Linux: SSH'
+        if: runner.os == 'Linux' && steps.v.outputs.method == 'ssh'
+        shell: bash
+        env:
+          PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PASSWORD:-}" ]; then echo "секрет RDP_PASSWORD не задан" >&2; exit 1; fi
+          echo "runner:$PASSWORD" | sudo chpasswd
+          printf 'PasswordAuthentication yes\nKbdInteractiveAuthentication yes\n' \
+            | sudo tee /etc/ssh/sshd_config.d/99-play.conf >/dev/null
+          sudo systemctl reload ssh 2>/dev/null || sudo service ssh reload 2>/dev/null \
+            || sudo service ssh start 2>/dev/null || true
+          for i in $(seq 1 20); do
+            ss -ltn | grep -q ':22' && break
+            sleep 1
+          done
+          ss -ltn | grep -q ':22' || { echo "sshd не слушает 22" >&2; exit 1; }
+      - name: 'macOS: Screen Sharing (ARD)'
+        if: runner.os == 'macOS' && steps.v.outputs.method == 'vnc'
+        shell: bash
+        env:
+          PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PASSWORD:-}" ]; then echo "секрет RDP_PASSWORD не задан" >&2; exit 1; fi
+          K=/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart
+          sudo "$K" -activate -configure -access -on -restart -agent -privs -all
+          sudo "$K" -configure -clientopts -setvnclegacy -vnclegacy yes -setvncpw "$PASSWORD"
+          sudo "$K" -restart -agent
+          for i in $(seq 1 20); do
+            sudo lsof -nP -iTCP:5900 -sTCP:LISTEN >/dev/null 2>&1 && break
+            sleep 1
+          done
+          sudo lsof -nP -iTCP:5900 -sTCP:LISTEN >/dev/null || {
+            echo "Screen Sharing не слушает 5900" >&2; exit 1; }
+      - name: 'macOS: SSH'
+        if: runner.os == 'macOS' && steps.v.outputs.method == 'ssh'
+        shell: bash
+        env:
+          PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PASSWORD:-}" ]; then echo "секрет RDP_PASSWORD не задан" >&2; exit 1; fi
+          sudo systemsetup -setremotelogin on
+          sudo dscl . -passwd /Users/runner "$PASSWORD"
+          for i in $(seq 1 20); do
+            sudo lsof -nP -iTCP:22 -sTCP:LISTEN >/dev/null 2>&1 && break
+            sleep 1
+          done
+          sudo lsof -nP -iTCP:22 -sTCP:LISTEN >/dev/null || { echo "sshd не слушает 22" >&2; exit 1; }
+      - name: bore-туннель
+        id: tun
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/play_tunnel.py start \
+            --port "${{ steps.v.outputs.port }}" --out out/tunnel.json
+      - name: connect.json
+        shell: bash
+        env:
+          PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          HOST=$(python3 -c "import json;print(json.load(open('out/tunnel.json'))['host'])")
+          PORT=$(python3 -c "import json;print(json.load(open('out/tunnel.json'))['port'])")
+          python3 scripts/play_connect.py write \
+            --label "${{ steps.v.outputs.label }}" \
+            --method "${{ steps.v.outputs.connect_method }}" \
+            --host "$HOST" --port "$PORT" \
+            --user "${{ steps.v.outputs.user }}" \
+            --password "$PASSWORD" \
+            --minutes "${{ steps.v.outputs.minutes }}" \
+            --out out/connect.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: play-connect
+          path: out/connect.json
+          retention-days: 1
+          if-no-files-found: warn
+      - name: summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### play: ${{ inputs.label }}"
+            echo "- метод: ${{ steps.v.outputs.connect_method }}"
+            echo "- машина работает до: см. expires_at в артефакте play-connect"
+            echo "- адрес и пароль — только в артефакте, не в логах"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: держать машину
+        shell: bash
+        run: |
+          python3 scripts/play_connect.py hold --minutes "${{ steps.v.outputs.minutes }}"
