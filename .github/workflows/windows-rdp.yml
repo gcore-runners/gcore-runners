@@ -1,10 +1,10 @@
 name: windows-rdp
 # Временная Windows-машина с RDP: замерить задержку «как у настоящего ПК».
 # Запуск (вручную, по слову владельца):
-#   gh workflow run windows-rdp.yml -R gcore-runners/gcore-runners -f minutes=60 -f tunnel=serveo
-# Вход: mstsc → адрес и порт из шага «Адрес», пользователь rdp, пароль — секрет RDP_PASSWORD.
-# tunnel=tailscale требует секрет TS_AUTHKEY (ключ tailnet, reusable, ephemeral); serveo — без настроек,
-# но трафик идёт через чужой релей, задержка выше и адрес живёт только пока держим машину.
+#   gh workflow run windows-rdp.yml -R gcore-runners/gcore-runners -f minutes=60 -f tunnel=bore
+# Вход: mstsc → адрес из артефакта play-connect, пользователь rdp, пароль — секрет RDP_PASSWORD.
+# tunnel=bore — без настроек (bore.pub); tunnel=tailscale требует секрет TS_AUTHKEY
+# (ключ tailnet, reusable, ephemeral). Адрес не печатается в лог, а кладётся в connect.json.
 on:
   workflow_dispatch:
     inputs:
@@ -12,8 +12,8 @@ on:
         description: 'Сколько держать машину, минут'
         default: '60'
       tunnel:
-        description: 'tailscale (нужен TS_AUTHKEY) или serveo (без настроек)'
-        default: 'serveo'
+        description: 'bore (без настроек) или tailscale (нужен TS_AUTHKEY)'
+        default: 'bore'
       os:
         description: 'Метка раннера: windows-2022 | windows-2025 | windows-11-arm'
         default: 'windows-2022'
@@ -37,6 +37,8 @@ jobs:
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1
           Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+          # туннель bore: вход с любого адреса, порт только 3389
+          New-NetFirewallRule -Name rdp-bore -DisplayName 'RDP bore' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
           # у интерфейса Tailscale профиль может быть «Public», и правило Remote Desktop тогда не действует:
           # открываем порт явно и только для адресов tailnet (100.64.0.0/10)
           New-NetFirewallRule -Name rdp-ts -DisplayName 'RDP tailnet' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any -RemoteAddress 100.64.0.0/10 -ErrorAction SilentlyContinue | Out-Null
@@ -54,6 +56,7 @@ jobs:
           Set-Service sshd -StartupType Automatic
           Start-Service sshd
           New-NetFirewallRule -Name sshd-in -DisplayName 'OpenSSH Server' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any -RemoteAddress 100.64.0.0/10 -ErrorAction SilentlyContinue | Out-Null
+          New-NetFirewallRule -Name sshd-bore -DisplayName 'OpenSSH Server (bore)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -Profile Any -ErrorAction SilentlyContinue | Out-Null
           Write-Host 'SSH включён (порт 22 в tailnet)'
       - name: Tailscale
         if: inputs.tunnel == 'tailscale'
@@ -68,20 +71,35 @@ jobs:
             Start-Process "$env:RUNNER_TEMP\ts.exe" '/quiet' -Wait
           }
           & $exe up --authkey "$env:TS_AUTHKEY" --hostname gh-windows-rdp --accept-routes
-          Write-Host "Адрес: $(& $exe ip -4)  (mstsc → этот IPv4)"
-      - name: Serveo-туннель
-        if: inputs.tunnel == 'serveo'
-        shell: pwsh
+          $ip = (& $exe ip -4 | Select-Object -First 1).Trim()
+          if (-not $ip) { throw 'tailscale не выдал адрес' }
+          @{ host = $ip; port = 3389 } | ConvertTo-Json -Compress |
+            Set-Content -Path (Join-Path $env:RUNNER_TEMP 'tunnel.json') -Encoding utf8
+          Write-Host 'Туннель готов; адрес — в артефакте play-connect'
+      - name: bore-туннель
+        if: inputs.tunnel == 'bore'
+        shell: bash
         run: |
-          $log = "$env:RUNNER_TEMP\serveo.log"
-          Start-Process ssh -ArgumentList '-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','ServerAliveInterval=30','-N','-R','0:localhost:3389','serveo.net' -RedirectStandardError $log -WindowStyle Hidden | Out-Null
-          $addr = $null
-          for ($i = 0; $i -lt 40 -and -not $addr; $i++) {
-            Start-Sleep -Seconds 3
-            if (Test-Path $log) { $m = Select-String -Path $log -Pattern 'serveo\.net:\d+' | Select-Object -First 1; if ($m) { $addr = $m.Matches[0].Value } }
-          }
-          if ($addr) { Write-Host "Адрес: $addr  (mstsc → этот адрес и порт)" }
-          else { Write-Host 'serveo не ответил:'; Get-Content $log -ErrorAction SilentlyContinue }
+          python scripts/play_tunnel.py start --port 3389 --out "$RUNNER_TEMP/tunnel.json"
+      - name: connect.json
+        if: always()
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          LABEL: ${{ inputs.os }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP 'tunnel.json'
+          if (-not (Test-Path $t)) { Write-Host 'туннель не поднялся: connect.json не пишем'; exit 0 }
+          $j = Get-Content $t -Raw | ConvertFrom-Json
+          python scripts/play_connect.py write --label $env:LABEL --method rdp --host $j.host --port $j.port --user rdp --password $env:RDP_PASSWORD --minutes $env:MINUTES --out out/connect.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: play-connect
+          path: out/connect.json
+          retention-days: 1
+          if-no-files-found: warn
       - name: Держать машину
         shell: pwsh
         env:
