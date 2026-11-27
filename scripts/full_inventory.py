@@ -276,6 +276,14 @@ def os_release():
     return d
 
 
+def windows_product_name(name, build):
+    """Реестр Windows 11 до сих пор отдаёт ProductName «Windows 10 …» — правим по сборке."""
+    b = to_int((build or "").split(".")[0])
+    if b >= 22000 and name.startswith("Windows 10"):
+        return "Windows 11" + name[len("Windows 10"):]
+    return name
+
+
 def windows_os_info():
     """ProductName/DisplayVersion/CurrentBuild/UBR из реестра — точнее, чем platform."""
     info = {"name": "", "version": "", "build": ""}
@@ -295,7 +303,7 @@ def windows_os_info():
         disp = g("DisplayVersion")
         build = g("CurrentBuild")
         ubr = g("UBR")
-        info["name"] = name
+        info["name"] = windows_product_name(name, build)
         info["version"] = disp
         info["build"] = build + (".%s" % ubr if ubr else "")
         info["display_version"] = disp
@@ -310,7 +318,7 @@ def os_info():
         return {
             "name": rel.get("PRETTY_NAME") or platform.platform(),
             "version": rel.get("VERSION_ID", ""),
-            "build": rel.get("VERSION", ""),
+            "build": "",
             "kernel": platform.release() or run(["uname", "-r"], 10),
         }
     if IS_MAC:
@@ -1020,12 +1028,18 @@ def probe_linux():
     elif bins["tigervncserver"] or bins["vncserver"]:
         connect["vnc"] = method("needs-setup", port=5900, user=user, secrets=[],
                                 setup="vncserver :99")
-    if bins["xrdp"]:
-        connect["rdp"] = method("needs-setup", port=3389, user=user, secrets=[],
-                                setup="sudo systemctl enable --now xrdp")
+    elif shutil.which("apt-get"):
+        connect["vnc"] = method("needs-setup", port=5900, user=user, secrets=[],
+                                setup="sudo apt-get install -y x11vnc")
     if bins["novnc_proxy"] or bins["websockify"]:
         connect["novnc"] = method("needs-setup", port=6080,
                                   setup="websockify --web /usr/share/novnc 6080 localhost:5900")
+    elif shutil.which("apt-get"):
+        connect["novnc"] = method("needs-setup", port=6080,
+                                  setup="sudo apt-get install -y novnc websockify")
+    if bins["xrdp"]:
+        connect["rdp"] = method("needs-setup", port=3389, user=user, secrets=[],
+                                setup="sudo systemctl enable --now xrdp")
     if bins["tailscale"]:
         connect["tailscale"] = method("available", secrets=["TS_AUTHKEY"])
     else:
