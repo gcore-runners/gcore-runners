@@ -1,0 +1,87 @@
+name: full-inventory
+# Полная инвентаризация доступных бесплатных раннеров: ОС, железо, инструменты,
+# приложения и возможности подключения. Только чтение, ничего не устанавливает.
+# Запуск:
+#   gh workflow run full-inventory.yml -R gcore-runners/gcore-runners --ref main
+# Результат — артефакт inventory-<label> на каждый job и сводка inventory-report.
+on:
+  workflow_dispatch:
+    inputs:
+      labels:
+        description: 'JSON-список меток runs-on'
+        default: '["ubuntu-slim","ubuntu-22.04","ubuntu-24.04","ubuntu-26.04","ubuntu-latest","ubuntu-22.04-arm","ubuntu-24.04-arm","ubuntu-26.04-arm","windows-2022","windows-2025","windows-2025-vs2026","windows-latest","windows-11-arm","windows-11-vs2026-arm","macos-15","macos-26","macos-latest","macos-15-intel","macos-26-intel","xcode-27"]'
+      apps:
+        description: 'Собирать полный список приложений (true/false)'
+        default: 'true'
+      timeout:
+        description: 'Лимит минут на job (1..360)'
+        default: '45'
+permissions:
+  contents: read
+concurrency:
+  group: full-inventory
+  cancel-in-progress: false
+jobs:
+  inventory:
+    strategy:
+      fail-fast: false
+      matrix:
+        label: ${{ fromJSON(inputs.labels) }}
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: collect
+        shell: bash
+        env:
+          INV_LABEL: ${{ matrix.label }}
+          INCLUDE_APPS: ${{ inputs.apps }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
+        run: |
+          set -o pipefail
+          mkdir -p out
+          if command -v python3 >/dev/null 2>&1; then PY=python3
+          elif command -v python >/dev/null 2>&1; then PY=python
+          else echo "python not found" > out/errors.txt; exit 1; fi
+          EXTRA=""
+          if [ "$INCLUDE_APPS" = "false" ]; then EXTRA="--no-apps"; fi
+          "$PY" scripts/full_inventory.py --out out $EXTRA
+          test -s out/inventory.json
+      - name: job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f out/summary.md ]; then cat out/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: inventory-${{ matrix.label }}
+          path: out
+          retention-days: 14
+          if-no-files-found: warn
+  report:
+    needs: inventory
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: inventory-*
+          path: artifacts
+      - name: merge
+        run: |
+          mkdir -p report
+          python3 scripts/render_inventory.py artifacts --out report
+          cat report/inventory.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inventory-report
+          path: report
+          retention-days: 14
