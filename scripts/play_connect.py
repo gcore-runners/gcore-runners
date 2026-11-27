@@ -18,6 +18,13 @@ import time
 LIMITS = {"ubuntu-slim": 8}
 DEFAULT_LIMIT = 360
 
+# Windows-консоль по умолчанию cp1252: русский текст не должен ронять шаг
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 NOTES = {
     "novnc": "браузер: http://{host}:{port}/vnc.html",
     "vnc": "VNC-клиент: {host}:{port} (Finder → Перейти → Подключиться к серверу…)",

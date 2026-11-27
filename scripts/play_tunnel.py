@@ -42,6 +42,13 @@ ASSETS = {
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 IS_WIN = sys.platform.startswith("win")
 
+# Windows-консоль по умолчанию cp1252: русский текст в stdout/stderr не должен ронять шаг
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def target():
     system = platform.system()
@@ -157,7 +164,7 @@ def start(args):
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as fh:
             fh.write("host=bore.pub\nport=%d\n" % addr)
-    print("play_tunnel: tunnel ready (порт %d)" % addr)
+    print("play_tunnel: tunnel ready (port %d)" % addr)
 
 
 def main():
