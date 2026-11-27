@@ -433,7 +433,7 @@ def hardware(probe_extra):
         cpu, phys = platform.processor(), 0
     total, free = disk_gb()
     return {
-        "cpu": cpu or platform.machine(),
+        "cpu": " ".join((cpu or platform.machine()).split()),
         "ncpu": os.cpu_count() or 0,
         "ncpu_physical": phys,
         "ram_gb": ram_gb(),
