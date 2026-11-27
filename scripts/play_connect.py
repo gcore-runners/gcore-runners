@@ -27,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 NOTES = {
     "novnc": "браузер: http://{host}:{port}/vnc.html",
-    "vnc": "VNC-клиент: {host}:{port} (Finder → Перейти → Подключиться к серверу…)",
+    "vnc": "VNC: {host}:{port}; имя runner (или любое), пароль — из карточки",
     "ssh": "ssh -p {port} {user}@{host}",
     "rdp": "mstsc → {host}:{port}; пользователь {user}",
 }
